@@ -13,6 +13,10 @@ from threading import Thread
 import pystray
 from PIL import Image, ImageDraw
 import time
+import psutil
+import signal
+import atexit
+
 
 
 VPNGATE_API_URL = "https://www.vpngate.net/api/iphone/"
@@ -24,19 +28,30 @@ class VPNGateApp:
         self.root = root
         self.root.title("VPNGate GUI Client")
 
+        self.own_vpn_pids = set()
+
+        self.favorites = self.load_favorites()  # a list of dicts
+        self.favorite_ips = {vpn['IP'] for vpn in self.favorites}
+
         self.dataframe = pd.DataFrame()
         self.filtered_df = pd.DataFrame()
         self.vpn_process = None
 
         self.create_widgets()
         self.load_cached_data()
-        #self.fetch_and_display()
+
         self.last_vpn_config = None
         self.auto_reconnect_enabled = True
         self.log_file_path = "vpn_logs.log"
 
         Thread(target=self.monitor_vpn_process, daemon=True).start()
         Thread(target=self.setup_tray_icon, daemon=True).start()
+        self.check_openvpn_process_count()
+
+        atexit.register(self.cleanup_on_exit)
+        signal.signal(signal.SIGINT, lambda sig, frame: self.cleanup_and_quit())
+        signal.signal(signal.SIGTERM, lambda sig, frame: self.cleanup_and_quit())
+
 
     def monitor_vpn_process(self):
         while True:
@@ -94,14 +109,23 @@ class VPNGateApp:
 
         # Buttons
         tk.Button(control_frame, text="Reload List", command=self.fetch_and_display).pack(side=tk.LEFT, padx=5)
-        tk.Button(control_frame, text="Show Favorites", command=self.show_favorites).pack(side=tk.LEFT, padx=5)
+        #        tk.Button(control_frame, text="Show Favorites", command=self.show_favorites).pack(side=tk.LEFT, padx=5)
+
+
+
+        # location
+        self.location_label = tk.Label(control_frame, text="Location: Unknown")
+        self.location_label.pack(side=tk.LEFT, padx=10)
+
+        tk.Button(control_frame, text="Check Location", command=self.check_location).pack(side=tk.LEFT, padx=5)
 
         # Treeview
-        self.tree = ttk.Treeview(self.root, columns=("Country", "IP", "Ping", "Speed", "Score", "NumVpnSessions"), show='headings')
+        self.tree = ttk.Treeview(self.root, columns=("Favorite", "Country", "IP", "Ping", "Speed", "Score", "NumVpnSessions"), show='headings')
         self.sort_direction = {}  # Store sort direction per column
         for col in self.tree["columns"]:
-            self.tree.heading(col, text=col, command=lambda _col=col: self.sort_by_column(_col))
-            self.tree.column(col, anchor=tk.CENTER, width=110)
+            self.tree.heading(col, text=col, command=lambda _col=col: self.sort_by_column(_col) if _col != "Favorite" else None)
+            self.tree.column(col, anchor=tk.CENTER, width=100)
+
         self.tree.pack(expand=True, fill="both", padx=10, pady=10)
 
         # Bottom buttons
@@ -110,7 +134,10 @@ class VPNGateApp:
 
         tk.Button(btn_frame, text="Connect", command=self.connect_selected).pack(side=tk.LEFT, padx=5)
         tk.Button(btn_frame, text="Disconnect", command=self.disconnect_vpn).pack(side=tk.LEFT, padx=5)
-        tk.Button(btn_frame, text="Add to Favorites ❤️", command=self.add_to_favorites).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Kill All OpenVPN 🔥", command=self.kill_all_openvpn).pack(side=tk.LEFT, padx=5)
+
+        self.vpn_proc_label = tk.Label(btn_frame, text="OpenVPN Processes: 0")
+        self.vpn_proc_label.pack(pady=5)
 
         # --- VPN Log Output ---
         log_label = tk.Label(self.root, text="OpenVPN Logs:")
@@ -118,6 +145,58 @@ class VPNGateApp:
 
         self.log_text = tk.Text(self.root, height=10, state="disabled", bg="black", fg="lime", font=("Courier", 9))
         self.log_text.pack(fill="both", padx=10, pady=(0, 10), expand=False)
+        self.context_menu = tk.Menu(self.root, tearoff=0)
+        self.context_menu.add_command(label="Add to Favorites ❤️", command=self.context_add_to_favorites)
+        self.context_menu.add_command(label="Remove from Favorites ❌", command=self.context_remove_from_favorites)
+
+        self.tree.bind("<Button-3>", self.show_context_menu)  # Right-click
+
+
+    def check_location(self):
+        try:
+            response = requests.get("https://ipwho.is")
+            data = response.json()
+
+            if data.get("success"):
+                country = data.get("country", "Unknown")
+                city = data.get("city", "Unknown")
+                ip = data.get("ip", "Unknown")
+                isp = data.get("connection", {}).get("isp", "Unknown")
+                self.location_label.config(text=f"Location: {city}, {country} ({ip})")
+            else:
+                self.location_label.config(text="Location: Unable to detect")
+        except Exception as e:
+            self.location_label.config(text="Location: Error")
+
+    def kill_all_openvpn(self):
+        killed = 0
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                if 'openvpn' in proc.info['name'].lower() or 'openvpn' in ' '.join(proc.info['cmdline']).lower():
+                    proc.kill()
+                    killed += 1
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+
+        if killed:
+            messagebox.showinfo("Success", f"Killed {killed} OpenVPN process(es).")
+        else:
+            messagebox.showinfo("Info", "No OpenVPN processes found.")
+
+    def check_openvpn_process_count(self):
+        count = 0
+        for proc in psutil.process_iter(['name', 'cmdline']):
+            try:
+                if 'openvpn' in proc.info['name'].lower() or 'openvpn ' in ' '.join(proc.info['cmdline']).lower():
+                    count += 1
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+
+        self.vpn_proc_label.config(text=f"OpenVPN Processes: {count}")
+
+        # Schedule to run again in 5 seconds (5000 milliseconds)
+        self.root.after(5000, self.check_openvpn_process_count)
+
 
     def append_log(self, message):
         self.log_text.configure(state="normal")
@@ -213,7 +292,8 @@ class VPNGateApp:
             self.tree.delete(row)
 
         for i, row in self.filtered_df.iterrows():
-            self.tree.insert('', tk.END, values=(row["CountryLong"], row["IP"], row["Ping"], row["Speed"], row["Score"], row["NumVpnSessions"]))
+            fav_mark = "❤️" if row["IP"] in self.favorite_ips else ""
+            self.tree.insert('', tk.END, values=(fav_mark, row["CountryLong"], row["IP"], row["Ping"], row["Speed"], row["Score"]))
 
     def connect_selected(self):
         selected_item = self.tree.focus()
@@ -257,6 +337,11 @@ class VPNGateApp:
             )
 
             Thread(target=self.read_vpn_output, daemon=True).start()
+            self.vpn_process = subprocess.Popen([...])
+            self.own_vpn_pids.add(self.vpn_process.pid)
+
+            # ✅ Trigger location check after 5 seconds (5000 ms)
+            self.root.after(5000, self.check_location)
         except Exception as e:
             self.append_log(f"[ERROR] VPN start failed: {e}\n")
 
@@ -282,7 +367,6 @@ class VPNGateApp:
     def add_to_favorites(self):
         selected_item = self.tree.focus()
         if not selected_item:
-            messagebox.showwarning("Warning", "No VPN selected.")
             return
 
         index = self.tree.index(selected_item)
@@ -292,8 +376,6 @@ class VPNGateApp:
         favorites.append(row)
         with open(FAVORITES_FILE, 'w') as f:
             json.dump(favorites, f, indent=2)
-
-        messagebox.showinfo("Added", "VPN added to favorites.")
 
     def load_favorites(self):
         if not os.path.exists(FAVORITES_FILE):
@@ -328,6 +410,67 @@ class VPNGateApp:
 
         for _, row in self.filtered_df.iterrows():
             self.tree.insert('', tk.END, values=(row["CountryLong"], row["IP"], row["Ping"], row["Speed"], row["Score"], row["NumVpnSessions"]))
+
+    def show_context_menu(self, event):
+        selected_item = self.tree.identify_row(event.y)
+        if selected_item:
+            self.tree.selection_set(selected_item)
+            self.context_menu.post(event.x_root, event.y_root)
+
+    def context_add_to_favorites(self):
+        selected_item = self.tree.focus()
+        if not selected_item:
+            return
+
+        index = self.tree.index(selected_item)
+        row = self.filtered_df.iloc[index].to_dict()
+        if row["IP"] in self.favorite_ips:
+            return  # Already a favorite
+
+        self.favorites.append(row)
+        self.favorite_ips.add(row["IP"])
+        with open(FAVORITES_FILE, 'w') as f:
+            json.dump(self.favorites, f, indent=2)
+        self.update_table()
+
+    def context_remove_from_favorites(self):
+        selected_item = self.tree.focus()
+        if not selected_item:
+            return
+
+        index = self.tree.index(selected_item)
+        row = self.filtered_df.iloc[index].to_dict()
+
+        self.favorites = [fav for fav in self.favorites if fav["IP"] != row["IP"]]
+        self.favorite_ips.discard(row["IP"])
+
+        with open(FAVORITES_FILE, 'w') as f:
+            json.dump(self.favorites, f, indent=2)
+        self.update_table()
+
+    def cleanup_and_quit(self):
+        self.cleanup_on_exit()
+        self.root.quit()
+
+    def cleanup_on_exit(self):
+        print("Cleaning up OpenVPN processes...")
+        for pid in list(self.own_vpn_pids):
+            try:
+                proc = psutil.Process(pid)
+                if "openvpn" in proc.name().lower():
+                    proc.terminate()
+                    print(f"Terminated VPN process {pid}")
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+
+        # Optionally: Kill ALL openvpn processes (if you're okay with it)
+        for proc in psutil.process_iter(['name']):
+            try:
+                if 'openvpn' in proc.info['name'].lower():
+                    proc.kill()
+                    print(f"Force killed lingering OpenVPN process PID {proc.pid}")
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
 
 
 if __name__ == "__main__":
