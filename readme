@@ -1,0 +1,94 @@
+I want to build an interface in python that downloads an refreshes the csv list from https://www.vpngate.net/api/iphone/  and allows the user to filter the list per country and order by the different fields and the user can pick  one row wich would decode the OpenVPN_ConfigData_Base64 column into a file and execute the openconnect command with that file as config
+
+
+pip install pandas requests tabulate
+pip install pystray pillow
+
+
+✅ Project Summary: VPNGate GUI Client in Python
+🧱 Base Functionality
+Feature	Description
+VPN Server List	Downloads and parses CSV from https://www.vpngate.net/api/iphone/
+GUI Interface	Built with Tkinter, includes table view, controls, and log output
+Sort and Filter	Sort by Score, Speed, or Ping; filter by country
+OpenVPN Support	Select a server to decode and run via openvpn
+Auto Bandwidth Conversion	Converts raw bps speed into Mbps/Gbps format
+Country Dropdown	Dynamically populated country selector
+❤️ Favorites Support
+Feature	Description
+Add to Favorites	Saves selected VPN entry to a local favorites.json
+Load Favorites	Displays saved favorites in the table view
+🔄 Auto-Reconnect
+Feature	Description
+Persistent Connection	Automatically reconnects if the OpenVPN process dies
+Last Config Tracking	Remembers last successful .ovpn config for reconnect
+🧰 System Tray Integration
+Feature	Description
+Background Mode	App runs in system tray using pystray
+Tray Menu Options	Reconnect, Disconnect, Exit
+Tray Icon	Minimal blue icon with white square drawn dynamically
+📋 Real-Time Log Viewer
+Feature	Description
+OpenVPN Log Output	Captures stdout/stderr from OpenVPN and streams into GUI
+Styled Log Panel	Black background, green monospace text, scrolls automatically
+Live Monitoring	Helps debug handshakes, errors, and VPN connection status
+🔧 Technology Stack
+Component	Tool / Library
+Language	Python 3.6+
+GUI	tkinter
+HTTP Fetching	requests
+Data Parsing	pandas
+Tray Icon	pystray, Pillow
+VPN Client	openvpn (invoked via subprocess)
+📦 File/Storage Structure
+File	Purpose
+favorites.json	Local file storing favorite VPNs
+Temporary .ovpn file	Generated per VPN config (auto)
+🛠 Installation Requirements
+pip install pandas requests pystray pillow
+
+
+openvpn must be installed and accessible from your terminal (sudo openvpn).
+
+Requires sudo privileges to start VPN.
+
+🖼 Example GUI Layout
++-------------------------------------------------------------+
+| Country [v]     | Sort by [Score v]   [Refresh] [Favorites] |
++-------------------------------------------------------------+
+|  Table (Country, IP, Ping, Speed, Score)                    |
+|  [Selectable Rows]                                          |
++-------------------------------------------------------------+
+| [Connect] [Disconnect] [Add to Favorites ❤️]               |
++-------------------------------------------------------------+
+| OpenVPN Logs:                                              |
+| ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ |
+| TLS handshake successful                                    |
+| Initialization Sequence Completed                           |
++-------------------------------------------------------------+
+
+✅ What’s Ready
+
+✔ Fully functioning GUI
+✔ VPN server list and controls
+✔ Real-time logs
+✔ System tray integration
+✔ Reconnect & Disconnect support
+✔ Favorites system
+
+🔮 Optional Next Steps
+
+Would you like to add:
+
+Feature	Description
+🌐 Proxy support	Connect OpenVPN via a proxy (e.g., SOCKS)
+📦 App packaging	Bundle into .exe or .app with PyInstaller
+📜 Log to file	Save connection logs to a file
+🛎️ Notifications	Show desktop notifications on status change
+🧪 Ping test / latency	Live test latency before connecting
+
+Let me know which direction you'd like to go next!
+
+Attach
+Search
+Voice
