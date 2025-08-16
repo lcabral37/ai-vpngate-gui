@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 import tkinter as tk
 from tkinter import ttk, messagebox
 import pandas as pd
@@ -16,6 +17,7 @@ import time
 
 VPNGATE_API_URL = "https://www.vpngate.net/api/iphone/"
 FAVORITES_FILE = "favorites.json"
+CACHE_FILE = "vpnlist_cache.csv"
 
 class VPNGateApp:
     def __init__(self, root):
@@ -27,9 +29,12 @@ class VPNGateApp:
         self.vpn_process = None
 
         self.create_widgets()
-        self.fetch_and_display()
+        self.load_cached_data()
+        #self.fetch_and_display()
         self.last_vpn_config = None
         self.auto_reconnect_enabled = True
+        self.log_file_path = "vpn_logs.log"
+
         Thread(target=self.monitor_vpn_process, daemon=True).start()
         Thread(target=self.setup_tray_icon, daemon=True).start()
 
@@ -78,21 +83,24 @@ class VPNGateApp:
         self.country_var = tk.StringVar()
         self.country_dropdown = ttk.Combobox(control_frame, textvariable=self.country_var)
         self.country_dropdown.pack(side=tk.LEFT, padx=5)
+        self.country_dropdown.pack(side=tk.LEFT, padx=5)
+        self.country_dropdown.bind("<<ComboboxSelected>>", lambda e: self.update_table())
 
-        # Sort menu
+        # # Sort menu
         tk.Label(control_frame, text="Sort by:").pack(side=tk.LEFT)
         self.sort_var = tk.StringVar(value="Score")
-        sort_menu = ttk.Combobox(control_frame, textvariable=self.sort_var, values=["Score", "Ping", "Speed"])
+        sort_menu = ttk.Combobox(control_frame, textvariable=self.sort_var, values=["Score", "Ping", "Speed", "NumVpnSessions"])
         sort_menu.pack(side=tk.LEFT, padx=5)
 
         # Buttons
-        tk.Button(control_frame, text="Refresh", command=self.fetch_and_display).pack(side=tk.LEFT, padx=5)
+        tk.Button(control_frame, text="Reload List", command=self.fetch_and_display).pack(side=tk.LEFT, padx=5)
         tk.Button(control_frame, text="Show Favorites", command=self.show_favorites).pack(side=tk.LEFT, padx=5)
 
         # Treeview
-        self.tree = ttk.Treeview(self.root, columns=("Country", "IP", "Ping", "Speed", "Score"), show='headings')
+        self.tree = ttk.Treeview(self.root, columns=("Country", "IP", "Ping", "Speed", "Score", "NumVpnSessions"), show='headings')
+        self.sort_direction = {}  # Store sort direction per column
         for col in self.tree["columns"]:
-            self.tree.heading(col, text=col)
+            self.tree.heading(col, text=col, command=lambda _col=col: self.sort_by_column(_col))
             self.tree.column(col, anchor=tk.CENTER, width=110)
         self.tree.pack(expand=True, fill="both", padx=10, pady=10)
 
@@ -117,6 +125,39 @@ class VPNGateApp:
         self.log_text.see("end")  # Auto-scroll
         self.log_text.configure(state="disabled")
 
+    def refresh_data(self):
+        try:
+            response = requests.get(VPNGATE_API_URL)
+            csv_data = response.text.split("#")[1].strip()
+            df = pd.read_csv(StringIO(csv_data))
+            df.dropna(subset=["OpenVPN_ConfigData_Base64"], inplace=True)
+
+            # Save to cache
+            df.to_csv(CACHE_FILE, index=False)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to fetch or parse VPN list:\n{e}")
+            return
+
+        # Convert speed
+        df["Speed"] = df["Speed"].apply(lambda x: self.human_readable_speed(x))
+        self.dataframe = df
+        self.populate_country_dropdown()
+        self.update_table()
+
+    def load_cached_data(self):
+        if not os.path.exists(CACHE_FILE):
+            self.refresh_data()
+            return
+
+        try:
+            df = pd.read_csv(CACHE_FILE)
+            df["Speed"] = df["Speed"].apply(lambda x: self.human_readable_speed(x))
+            self.dataframe = df
+            self.populate_country_dropdown()
+            self.update_table()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load cached data:\n{e}")
+            self.refresh_data()
 
     def fetch_and_display(self):
         try:
@@ -172,7 +213,7 @@ class VPNGateApp:
             self.tree.delete(row)
 
         for i, row in self.filtered_df.iterrows():
-            self.tree.insert('', tk.END, values=(row["CountryLong"], row["IP"], row["Ping"], row["Speed"], row["Score"]))
+            self.tree.insert('', tk.END, values=(row["CountryLong"], row["IP"], row["Ping"], row["Speed"], row["Score"], row["NumVpnSessions"]))
 
     def connect_selected(self):
         selected_item = self.tree.focus()
@@ -208,7 +249,7 @@ class VPNGateApp:
             self.log_text.configure(state="disabled")
 
             self.vpn_process = subprocess.Popen(
-                ["sudo", "openvpn", "--config", config_path],
+                ["openvpn", "--data-ciphers", "AES-128-CBC", "--config", config_path],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 bufsize=1,
@@ -223,8 +264,12 @@ class VPNGateApp:
         if not self.vpn_process:
             return
 
-        for line in self.vpn_process.stdout:
-            self.append_log(line)
+        with open(self.log_file_path, "a") as log_file:
+            for line in self.vpn_process.stdout:
+                self.append_log(line)
+                log_file.write(line)
+                log_file.flush()
+                print(line)
 
     def disconnect_vpn(self):
         if self.vpn_process and self.vpn_process.poll() is None:
@@ -266,6 +311,24 @@ class VPNGateApp:
             self.update_table(favorites)
         except Exception as e:
             messagebox.showerror("Error", f"Could not load favorites:\n{e}")
+
+    def sort_by_column(self, col):
+        if col not in self.filtered_df.columns:
+            return
+
+        # Toggle sort direction
+        ascending = self.sort_direction.get(col, False)
+        self.sort_direction[col] = not ascending
+
+        self.filtered_df = self.filtered_df.sort_values(by=col, ascending=ascending).reset_index(drop=True)
+
+        # Update treeview
+        for row in self.tree.get_children():
+            self.tree.delete(row)
+
+        for _, row in self.filtered_df.iterrows():
+            self.tree.insert('', tk.END, values=(row["CountryLong"], row["IP"], row["Ping"], row["Speed"], row["Score"], row["NumVpnSessions"]))
+
 
 if __name__ == "__main__":
     root = tk.Tk()
